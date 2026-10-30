@@ -118,6 +118,35 @@ function getDailyMotivation(date = getLocalDate(new Date())) {
   const dayNumber = Math.floor(Date.UTC(year, month - 1, day) / 86400000)
   return dailyMotivations[dayNumber % dailyMotivations.length]
 }
+function getNextMoveRecommendation(user, activitiesToRecommend) {
+  const availableActivities = activitiesToRecommend.filter((activity) => (
+    Math.max(activity.spots - (activity.attendees ?? []).length, 0) > 0
+  ))
+  if (!availableActivities.length) return null
+
+  const latestActivity = getActivityHistory(user)[0]
+  const normalizedSport = {
+    laufen: 'joggen',
+    wandern: 'wandern',
+    radfahren: 'radfahren',
+    fitness: 'fitness',
+  }[latestActivity?.type?.toLocaleLowerCase('de-DE')]
+  const matchingActivity = normalizedSport
+    ? availableActivities.find((activity) => activity.sport.toLocaleLowerCase('de-DE') === normalizedSport)
+    : null
+  if (matchingActivity) {
+    return { activity: matchingActivity, reason: `Passt zu deiner letzten ${latestActivity.type}-Session` }
+  }
+
+  const easyStart = availableActivities.find((activity) => (
+    activity.price === 'Kostenlos' && /alle level/i.test(activity.level)
+  ))
+  const activity = easyStart ?? availableActivities[0]
+  return {
+    activity,
+    reason: easyStart ? 'Kostenlos und für alle Level' : `Noch ${Math.max(activity.spots - (activity.attendees ?? []).length, 0)} Plätze frei`,
+  }
+}
 const demoRouteSessions = [
   { id: 1, sport: 'Laufen', distance: 5.2, duration: 31, date: todayISO, daysAgo: 0, area: 'Kreuzberg' },
   { id: 2, sport: 'Radfahren', distance: 12.4, duration: 38, date: previousISO, daysAgo: 1, area: 'Tempelhofer Feld' },
@@ -289,7 +318,6 @@ function App() {
   const joinedCommunities = currentUser?.joinedCommunities ?? []
   const checkedIn = currentUser?.lastCheckIn === todayISO
   const streakWeeks = currentUser ? getActivityStreakWeeks(currentUser, new Date(`${todayISO}T12:00:00`)) : 0
-  const activityLogged = currentUser?.activityLogged ?? 0
   const challengeProgress = currentUser?.challengeProgress ?? 0
   const monthProgress = currentUser?.monthProgress ?? 0
   const settings = currentUser?.settings ?? { notifications: true, profilePublic: true, weeklyDigest: false }
@@ -587,9 +615,9 @@ function App() {
       ...(Array.isArray(currentUser.activityHistory) ? currentUser.activityHistory : []),
       activityRecord,
     ])
-    awardXp(reward, isOutdoor
-      ? `Strecke erfasst · +${reward} XP!`
-      : `+${reward} XP – ${type === 'Match' ? 'Match abgeschlossen' : 'Workout eingetragen'}!`)
+    const activityLabel = isOutdoor ? `${type}-Route` : type
+    const challengeMessage = completedChallenges.length ? ' · Challenge-Ziel erreicht – Belohnung ansehen!' : ''
+    awardXp(reward, `${activityLabel} gespeichert · +${reward} XP${challengeMessage}`)
   }
   const recordActivity = (details) => {
     const activityDetails = details?.nativeEvent ? {} : details ?? {}
@@ -730,11 +758,11 @@ function App() {
               <PartnerView occupancy={occupancy} setOccupancy={setOccupancy} bookings={partnerBookings} setBookings={setPartnerBookings} showToast={showToast} campaigns={partnerChallenges} partners={partnerOrganizations} onCreateCampaign={createPartnerCampaign} />
             ) : page === 'home' ? (
               <HomeView
-                user={currentUser} streakWeeks={streakWeeks} checkedIn={checkedIn} activityLogged={activityLogged}
+                user={currentUser} streakWeeks={streakWeeks} checkedIn={checkedIn}
                 onCheckIn={recordCheckIn} onLogActivity={recordActivity} xp={xp} premium={premium} setPremium={setPremium} challengeProgress={challengeProgress}
                 setPage={navigate} setPartnerMode={setPartnerMode} onDiscover={() => { setPage('discover'); setSportFilter('Alle') }}
                 onActivity={openActivity} onCreateMeeting={() => setMeetingDialog(true)} onProgress={() => { setProgressTab('Fortschritt'); navigate('progress') }} onActivityHistory={() => { setProgressTab('Aktivitäten'); navigate('progress') }} onHeatmap={() => { setProgressTab('Heatmap'); navigate('progress') }} onChallenges={() => { setChallengeFilter('Alle'); setProgressTab('Challenge-Board'); navigate('progress') }} routeSessions={currentUser.routeSessions ?? []}
-                today={todayLabel} items={events.filter((event) => !hiddenEventIds.includes(event.id)).slice(0, 3)}
+                today={todayLabel} items={events.filter((event) => !hiddenEventIds.includes(event.id))}
               />
             ) : page === 'discover' ? (
               <DiscoverView
@@ -790,12 +818,13 @@ function App() {
 function PageHeading({ eyebrow, title, description, action, className = '' }) {
   return <div className={`page-heading ${className}`.trim()}><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action}</div>
 }
-function HomeView({ user, streakWeeks, checkedIn, activityLogged, onCheckIn, onLogActivity, xp, premium, setPremium, challengeProgress, setPage, setPartnerMode, onDiscover, onActivity, onCreateMeeting, onProgress, onActivityHistory, onHeatmap, onChallenges, routeSessions, today, items }) {
+function HomeView({ user, streakWeeks, checkedIn, onCheckIn, onLogActivity, xp, premium, setPremium, challengeProgress, setPage, setPartnerMode, onDiscover, onActivity, onCreateMeeting, onProgress, onActivityHistory, onHeatmap, onChallenges, routeSessions, today, items }) {
   const { level, currentXp: levelXp, nextLevelXp } = getLevelInfo(xp)
   const dailyMotivation = getDailyMotivation()
+  const nextMove = getNextMoveRecommendation(user, items)
   return (
     <>
-      <PageHeading className="home-page-heading" eyebrow={today} title={<>Dein nächstes Level<br className="desktop-break" /> wartet auf dich, {user.name.split(' ')[0]}<span className="lime-period">.</span></>} description={<><span className="motivation-label">Spruch des Tages:</span> „{dailyMotivation}“</>} action={<Button className="outline-button" icon={<CalendarLtrRegular />} onClick={() => setPage('discover')}>Aktivitäten ansehen</Button>} />
+      <PageHeading className="home-page-heading" eyebrow={today} title={<>Dein nächstes Level<br className="desktop-break" /> wartet auf dich, {user.name.split(' ')[0]}<span className="lime-period">.</span></>} description={`„${dailyMotivation}“`} action={<Button className="outline-button" icon={<CalendarLtrRegular />} onClick={() => setPage('discover')}>Aktivitäten ansehen</Button>} />
       <section className="hero-panel" aria-label="Spielerprofil">
         <div className="hero-content">
           <button className="hero-progress-button" onClick={onProgress} aria-label={`Fortschritt öffnen: Level ${level}, ${levelXp} von ${nextLevelXp} XP`}>
@@ -820,16 +849,27 @@ function HomeView({ user, streakWeeks, checkedIn, activityLogged, onCheckIn, onL
               </button>
             </div>
             </div>
-            {(checkedIn || activityLogged > 0) && <span key={xp} className="reward-pop" role="status">XP gesammelt!</span>}
           </div>
           <div className="hero-demo-note">Dein Fortschritt wird nur lokal für diese Demo angezeigt.</div>
         </div>
         <div className="hero-art" aria-hidden="true"><div className="art-grid" /><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="art-sun" /><div className="art-ball">S</div><div className="art-spark">✳</div><div className="art-number">{String(level).padStart(2, '0')}</div><span className="art-level-caption">LEVEL<br />UNLOCKED</span></div>
       </section>
 
+      {nextMove
+        ? <button className="next-move-card" type="button" onClick={() => onActivity(nextMove.activity)} aria-label={`${nextMove.activity.title} empfohlen: ${nextMove.reason}. Details öffnen`}>
+          <span className="next-move-icon"><ActivitySportIcon sport={nextMove.activity.sport} /></span>
+          <span className="next-move-copy"><span className="eyebrow">{nextMove.reason.startsWith('Passt') ? 'DEIN NÄCHSTER SCHRITT' : 'EINFACH LOSLEGEN'}</span><strong>{nextMove.reason.startsWith('Passt') ? `Knüpf an ${nextMove.activity.sport} an.` : 'Eine Aktivität, die zu dir passt.'}</strong><small>{nextMove.activity.title} · {nextMove.activity.time} · {nextMove.reason}</small></span>
+          <span className="next-move-cta">Details ansehen <ArrowRightRegular /></span>
+        </button>
+        : <button className="next-move-card next-move-empty" type="button" onClick={onDiscover}>
+          <span className="next-move-icon"><CompassNorthwestRegular /></span>
+          <span className="next-move-copy"><span className="eyebrow">DEIN NÄCHSTER SCHRITT</span><strong>Entdecke, was heute zu dir passt.</strong><small>Schau dir alle Aktivitäten an oder erstelle dein eigenes Treffen.</small></span>
+          <span className="next-move-cta">Aktivitäten <ArrowRightRegular /></span>
+        </button>}
+
       <div className="section-title-row"><div><div className="eyebrow">DEIN MOMENTUM</div><h2>Dein Sport, dein Rhythmus</h2></div><button className="text-button" onClick={() => setPage('progress')}>Zum Fortschritt <ArrowRightRegular /></button></div>
       <div className="stat-grid">
-        <button className="stat-card dashboard-widget-button" onClick={onActivityHistory} aria-label={`Aktivitätsverlauf öffnen. Aktuelle Serie: ${streakWeeks} ${streakWeeks === 1 ? 'Woche' : 'Wochen'}`}><span className="stat-top"><span className="stat-icon lime"><FlashRegular /></span><span className="stat-label">AKTUELLE SERIE</span></span><span className="stat-value">{streakWeeks} <small>{streakWeeks === 1 ? 'Woche' : 'Wochen'}</small></span><span className="stat-description">Mindestens eine Aktivität pro Kalenderwoche.</span><span className="streak-week-note">{streakWeeks === 0 ? 'Starte diese Woche deine Serie.' : 'Jede aktive Woche zählt – Pausen unterbrechen sie.'}</span></button>
+        <button className="stat-card dashboard-widget-button" onClick={onActivityHistory} aria-label={`Aktivitätsverlauf öffnen. Aktuelle Serie: ${streakWeeks} ${streakWeeks === 1 ? 'Woche' : 'Wochen'}`}><span className="stat-top"><span className="stat-icon lime"><FlashRegular /></span><span className="stat-label">AKTUELLE SERIE</span></span><span className="stat-value">{streakWeeks} <small>{streakWeeks === 1 ? 'Woche' : 'Wochen'}</small></span><span className="stat-description">Mindestens eine Aktivität pro Kalenderwoche.</span><span className="streak-week-note">{streakWeeks === 0 ? 'Jeder Neustart zählt – mach diese Woche deinen ersten Move.' : 'Pausen sind okay. Steig einfach in deinem Tempo wieder ein.'}</span></button>
         <button className="stat-card dashboard-widget-button" onClick={onChallenges} aria-label={`Wöchentliche Challenge öffnen. ${challengeProgress} von 5 Aktivitäten`}><span className="stat-top"><span className="stat-icon"><TrophyRegular /></span><span className="stat-label">DIESE WOCHE</span></span><span className="stat-value">{challengeProgress} <small>/ 5 Aktivitäten</small></span><span className="stat-description">{challengeProgress >= 5 ? 'Wochenziel erreicht – stark!' : `Noch ${5 - challengeProgress} bis zum Wochenziel.`}</span><span className="small-progress"><span style={{ width: `${challengeProgress * 20}%` }} /></span><span className="subtle-link">Challenge ansehen <ArrowRightRegular /></span></button>
         <button className="stat-card premium-card dashboard-widget-button" onClick={() => setPremium((value) => !value)} aria-label={premium ? 'Premium-Vorschau ausschalten' : 'Premium-Vorschau ansehen'}><span className="stat-top"><span className="stat-icon"><CrownRegular /></span><span className="stat-label">{premium ? 'PREMIUM-VORSCHAU' : 'BASIS · KOSTENLOS'}</span></span><span className="stat-value">{premium ? 'Alles drin.' : 'Mehr erleben.'}</span><span className="stat-description">{premium ? 'Erweiterte Analytics, persönliche Themes und exklusive Challenges – Vorschau aktiv, kein Kauf.' : 'Premium mit Analytics, individuellen Themes und exklusiven Challenges.'}</span><span className="subtle-link">{premium ? 'Zur kostenlosen Basis wechseln' : 'Premium-Vorschau ansehen'} <ArrowRightRegular /></span></button>
       </div>
@@ -840,7 +880,7 @@ function HomeView({ user, streakWeeks, checkedIn, activityLogged, onCheckIn, onL
       </a>
 
       <div className="section-title-row discovery-title"><div><div className="eyebrow">FÜR DICH ENTDECKT</div><h2>Dein nächstes Abenteuer</h2></div><button className="text-button" onClick={onDiscover}>Alle Aktivitäten <ArrowRightRegular /></button></div>
-      <div className="activity-grid home-activities">{items.slice(0, 3).map((activity) => <ActivityCard key={activity.id} activity={{ ...activity, spots: activity.spots - (activity.attendees ?? []).length }} onSelect={() => onActivity(activity)} compact />)}</div>
+      <div className="activity-grid home-activities">{items.slice(0, 3).map((activity) => <ActivityCard key={activity.id} activity={{ ...activity, spots: Math.max(activity.spots - (activity.attendees ?? []).length, 0) }} onSelect={() => onActivity(activity)} compact />)}</div>
       <a className="community-callout" href="#connect" onClick={(event) => { event.preventDefault(); setPage('connect') }}><span className="callout-icon"><PeopleCommunityRegular /></span><span className="community-callout-copy"><strong>Zusammen macht’s mehr Spaß.</strong><span>Finde deine Crew und bleib gemeinsam in Bewegung.</span></span><span className="callout-button">Community entdecken <ArrowRightRegular /></span></a>
       <div className="home-actions"><Button className="outline-button" icon={<AddRegular />} onClick={onCreateMeeting}>Eigenes Treffen anlegen</Button><button className="bottom-demo-link" onClick={() => { setPartnerMode(true); showToast('Partnerportal-Vorschau geöffnet') }}><ShieldCheckmarkRegular /> Zur B2B-Partneransicht</button></div>
     </>
@@ -1190,7 +1230,7 @@ const heatmapAreas = [
     { name: 'Innenbahn', sport: 'Laufen', count: 48, path: 'M 154 160 C 154 111 209 87 300 87 C 391 87 446 111 446 160 C 446 209 391 233 300 233 C 209 233 154 209 154 160' },
     { name: 'Außenbahn', sport: 'Laufen', count: 33, path: 'M 123 160 C 123 92 190 58 300 58 C 410 58 477 92 477 160 C 477 228 410 262 300 262 C 190 262 123 228 123 160' },
     { name: 'Einlaufspur', sport: 'Laufen', count: 18, path: 'M 57 160 L 123 160' },
-    { name: 'Stadionrunde', sport: 'Radfahren', count: 9, path: 'M 94 160 C 94 78 174 38 300 38 C 426 38 506 78 506 160 C 506 242 426 282 300 282 C 174 282 94 242 94 160' },
+    { name: 'Stadionpark-Runde', sport: 'Wandern', count: 9, path: 'M 42 160 C 42 74 111 17 300 17 C 489 17 558 74 558 160 C 558 246 489 303 300 303 C 111 303 42 246 42 160Z' },
   ] },
   { id: 'river', name: 'Flussufer', place: 'Musterufer', kind: 'river', routes: [
     { name: 'Westliche Uferpromenade', sport: 'Laufen', count: 40, path: 'M 229 -5 C 207 35 250 76 232 122 S 271 178 252 222 S 268 279 246 325' },
@@ -1249,26 +1289,33 @@ function HeatmapBackdrop({ area }) {
 }
 
 function RouteMap({ compact = false, activeSport = 'Alle', timeRange = '30 Tage', areaId = 'park' }) {
+  const filterId = useId().replaceAll(':', '')
   const area = heatmapAreas.find((item) => item.id === areaId) ?? heatmapAreas[0]
   const visibleRoutes = area.routes.filter((route) => activeSport === 'Alle' || route.sport === activeSport)
   const multiplier = timeRange === '7 Tage' ? .3 : timeRange === 'Alle' ? 3 : 1
   const routes = visibleRoutes.map((route) => ({
     ...route,
     count: Math.max(1, Math.round(route.count * multiplier)),
+    intensity: Math.min(1, route.count * multiplier / 48),
   }))
-  const maxCount = Math.max(...routes.map((route) => route.count), 1)
   return <div className={`route-map ${compact ? 'compact' : ''}`}>
-    <svg viewBox="0 0 600 320" role="img" aria-label={`Schematische, eigens gezeichnete Musterkarte ${area.place} mit fiktiver ${activeSport === 'Alle' ? '' : `${activeSport}-`}Aktivitätsdichte`} preserveAspectRatio="xMidYMid meet">
-      <defs><filter id={`route-glow-${area.id}`} x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="5" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter></defs>
+    <svg viewBox="0 0 600 320" role="img" aria-label={`Fiktive, gezeichnete Musterkarte ${area.place} mit ${activeSport === 'Alle' ? '' : `${activeSport}-`}Wegedichte für ${timeRange.toLowerCase()}`} preserveAspectRatio="xMidYMid meet">
+      <defs><filter id={`route-glow-${filterId}`} x="-45%" y="-45%" width="190%" height="190%"><feGaussianBlur stdDeviation="4.5" /></filter></defs>
       <HeatmapBackdrop area={area} />
-      <g fill="none" stroke="#c6c2a8" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" opacity=".58">
+      <g fill="none" stroke="#17231f" strokeWidth="9" strokeLinecap="round" strokeLinejoin="round" opacity=".82">
         {area.routes.map((route) => <path key={`map-path-${route.name}`} d={route.path} />)}
       </g>
-      <g fill="none" strokeLinecap="round" strokeLinejoin="round" filter={`url(#route-glow-${area.id})`}>
-        {routes.map((route) => <path key={`glow-${route.name}`} d={route.path} stroke={route.count / maxCount > .68 ? '#ff8264' : route.count / maxCount > .36 ? '#d4f45a' : '#57ddc0'} strokeWidth={5 + route.count / maxCount * 14} opacity=".42" />)}
+      <g fill="none" stroke="#c6c2a8" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" opacity=".78">
+        {area.routes.map((route) => <path key={`road-${route.name}`} d={route.path} />)}
+      </g>
+      <g fill="none" strokeLinecap="round" strokeLinejoin="round" filter={`url(#route-glow-${filterId})`}>
+        {routes.map((route) => <path key={`glow-${route.name}`} d={route.path} stroke={route.intensity > .72 ? '#ff795f' : route.intensity > .42 ? '#f5dc57' : '#4fd9c0'} strokeWidth={9 + route.intensity * 12} opacity={.14 + route.intensity * .15} />)}
       </g>
       <g fill="none" strokeLinecap="round" strokeLinejoin="round">
-        {routes.map((route) => <path key={route.name} d={route.path} stroke={route.count / maxCount > .68 ? '#ff8264' : route.count / maxCount > .36 ? '#d4f45a' : '#57ddc0'} strokeWidth={2 + route.count / maxCount * 8} opacity=".98"><title>{route.name} · {route.count} fiktive Aktivitäten</title></path>)}
+        {routes.map((route) => <path key={route.name} d={route.path} stroke={route.intensity > .72 ? '#ff795f' : route.intensity > .42 ? '#f5dc57' : '#4fd9c0'} strokeWidth={2.8 + route.intensity * 4} opacity={.52 + route.intensity * .35}><title>{route.name} · {route.count} fiktive Aktivitäten</title></path>)}
+      </g>
+      <g fill="none" stroke="#f4f8e9" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round" opacity=".43">
+        {routes.map((route) => <path key={`center-${route.name}`} d={route.path} />)}
       </g>
       <g fill="#eff3e8" fontFamily="sans-serif" fontSize="12" fontWeight="700" opacity=".88"><text x="20" y="28">{area.place.toUpperCase()}</text></g>
       <g fill="none" stroke="#eff3e8" strokeWidth="2" opacity=".8"><path d="M556 39V19M550 25l6-6 6 6" /><path d="M520 296H574M520 292V300M574 292V300" /></g>
@@ -1304,7 +1351,7 @@ function OutdoorHeatmap({ sessions, onRecordRoute }) {
       <div><span className="stat-label">DEIN FLOW</span><strong>{favoriteSport}</strong></div>
     </section>
     <section className="heatmap-panel panel">
-      <div className="heatmap-panel-head"><div><span className="eyebrow">FÜNF SELBST GESTALTETE MUSTERKARTEN</span><h2>Wo sind die Wege besonders beliebt?</h2><p>Die Wegbreite zeigt beispielhaft, wie viele Läufer:innen oder Radfahrer:innen hier unterwegs sind.</p></div><span className="demo-map-tag"><LocationRegular /> OHNE EXTERNE KARTEN</span></div>
+      <div className="heatmap-panel-head"><div><span className="eyebrow">FÜNF SELBST GESTALTETE MUSTERKARTEN</span><h2>Wo sind die Wege besonders beliebt?</h2><p>Hintergrundwege, Grünflächen und markierte Strecken sind aufeinander abgestimmt. Je heller und breiter eine Route leuchtet, desto stärker ist sie in diesem fiktiven Beispiel genutzt.</p></div><span className="demo-map-tag"><LocationRegular /> OHNE EXTERNE KARTEN</span></div>
       <div className="heatmap-area-picker" role="group" aria-label="Musterkarte auswählen">{heatmapAreas.map((area) => <button key={area.id} className={areaId === area.id ? 'selected' : ''} aria-pressed={areaId === area.id} onClick={() => setAreaId(area.id)}><strong>{area.name}</strong><small>{area.place}</small></button>)}</div>
       <div className="heatmap-filters" role="group" aria-label="Heatmap nach Sportart filtern">{['Alle', 'Laufen', 'Radfahren', 'Wandern'].map((item) => <button key={item} className={sportFilter === item ? 'selected' : ''} aria-pressed={sportFilter === item} onClick={() => setSportFilter(item)}>{item}</button>)}</div>
       <div className="route-map-wrap"><RouteMap activeSport={sportFilter} timeRange={range} areaId={areaId} /></div>
