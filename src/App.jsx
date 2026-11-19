@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { FluentProvider, Button, Avatar, ProgressBar, webDarkTheme } from '@fluentui/react-components'
 import {
-  AddRegular, ArrowRightRegular, CalendarLtrRegular, CheckmarkCircleRegular,
+  AddRegular, ArrowCounterclockwiseRegular, ArrowRightRegular, CalendarLtrRegular, CheckmarkCircleRegular,
   ChevronDownRegular, ChevronRightRegular, ClockRegular, CompassNorthwestRegular,
   CrownRegular, FlashRegular, GroupRegular, HomeRegular, LocationRegular, PeopleCommunityRegular,
   SearchRegular, ShieldCheckmarkRegular, SparkleRegular, TrophyRegular, PersonRegular,
@@ -14,6 +14,7 @@ import ActivityHistoryView from './features/activity-history/ActivityHistoryView
 import { getActivityHistory } from './features/activity-history/activityHistory.js'
 import { getActivityStreakWeeks } from './features/progression/activityStreak.js'
 import { getLevelInfo } from './features/progression/leveling.js'
+import { getLevelTreeState, getLevelTreeXpReward } from './features/progression/levelTree.js'
 import './App.css'
 
 const demoUsers = [
@@ -534,8 +535,9 @@ function App() {
       showToast(`Einladungslink: ${link}`)
     }
   }
-  const awardXp = (amount, message) => {
-    const updatedXp = xp + amount
+  const awardXp = (amount, message, source = 'all') => {
+    const earnedXp = getLevelTreeXpReward(currentUser, amount, source)
+    const updatedXp = xp + earnedXp
     const currentLevel = getLevelInfo(xp).level
     const updatedLevel = getLevelInfo(updatedXp).level
     updateCurrentProfile('xp', updatedXp)
@@ -543,14 +545,15 @@ function App() {
       setLevelUp(updatedLevel)
       window.setTimeout(() => setLevelUp(0), 2200)
     }
+    const adjustedMessage = earnedXp === amount ? message : message.replaceAll(`+${amount} XP`, `+${earnedXp} XP`)
     showToast(updatedLevel > currentLevel
-      ? `LEVEL UP! Level ${updatedLevel} erreicht${Math.floor(updatedLevel / 5) > Math.floor(currentLevel / 5) ? ' · Level-Medaille freigeschaltet' : ''} · ${message}`
-      : message)
+      ? `LEVEL UP! Level ${updatedLevel} erreicht${Math.floor(updatedLevel / 5) > Math.floor(currentLevel / 5) ? ' · Level-Medaille freigeschaltet' : ''} · ${adjustedMessage}`
+      : adjustedMessage)
   }
   const recordCheckIn = () => {
     if (checkedIn) return
     updateCurrentProfile('lastCheckIn', todayISO)
-    awardXp(20, '+20 XP – Check-in geschafft!')
+    awardXp(20, '+20 XP – Check-in geschafft!', 'checkin')
   }
   const recordCompletedActivity = (details) => {
     if (!currentUser) return
@@ -560,6 +563,7 @@ function App() {
     const date = details.date ?? todayISO
     const isOutdoor = ['Laufen', 'Radfahren', 'Wandern'].includes(type)
     const reward = type === 'Match' ? 100 : isOutdoor ? 50 + Math.round(distance * 10) : 50
+    const xpSource = type === 'Match' ? 'match' : isOutdoor ? 'route' : 'activity'
     const routeSessions = currentUser.routeSessions ?? []
     const routeSession = isOutdoor ? {
       id: getNextId(routeSessions),
@@ -602,7 +606,7 @@ function App() {
       place: details.place?.trim() || routeSession?.area || 'Nicht angegeben',
       friendIds: [...new Set(details.friendIds ?? [])],
       completedChallenges,
-      xpEarned: reward,
+      xpEarned: getLevelTreeXpReward(currentUser, reward, xpSource),
       routeSessionId: routeSession?.id,
     }
     updateCurrentProfile('activityLogged', nextUser.activityLogged)
@@ -617,7 +621,7 @@ function App() {
     ])
     const activityLabel = isOutdoor ? `${type}-Route` : type
     const challengeMessage = completedChallenges.length ? ' · Challenge-Ziel erreicht – Belohnung ansehen!' : ''
-    awardXp(reward, `${activityLabel} gespeichert · +${reward} XP${challengeMessage}`)
+    awardXp(reward, `${activityLabel} gespeichert · +${reward} XP${challengeMessage}`, xpSource)
   }
   const recordActivity = (details) => {
     const activityDetails = details?.nativeEvent ? {} : details ?? {}
@@ -655,7 +659,24 @@ function App() {
     }])
     awardXp(challenge.reward, challenge.discount
       ? `${challenge.discount}% Rabatt bei ${challenge.partner} freigeschaltet · +${challenge.reward} XP!`
-      : `Medaille „${challenge.medal}“ gesichert · +${challenge.reward} XP!`)
+      : `Medaille „${challenge.medal}“ gesichert · +${challenge.reward} XP!`, 'challenge')
+  }
+  const unlockLevelTreeNode = (nodeId) => {
+    if (!currentUser) return
+    const tree = getLevelTreeState(currentUser.xp, currentUser.levelTreeNodes)
+    const node = tree.branches.flatMap((branch) => branch.nodes).find((item) => item.id === nodeId)
+    if (!node?.available) return
+    updateCurrentProfile('levelTreeNodes', (current) => [...new Set([...(current ?? []), node.id])])
+    showToast(node.effect.raffleEntries
+      ? `Demo-Los freigeschaltet! Du hast jetzt ${tree.raffleEntries + node.effect.raffleEntries} virtuelle Lose.`
+      : `${node.title} freigeschaltet · ${node.description}`)
+  }
+  const resetLevelTreeNodes = () => {
+    if (!currentUser) return
+    const tree = getLevelTreeState(currentUser.xp, currentUser.levelTreeNodes)
+    if (!tree.spentPoints) return
+    updateCurrentProfile('levelTreeNodes', [])
+    showToast(`${tree.spentPoints} Talentpunkte zurückerstattet. Dein Level und deine XP bleiben erhalten.`)
   }
   const copyDiscountCode = async (couponCode) => {
     try {
@@ -786,7 +807,7 @@ function App() {
             ) : page === 'admin' && isAdmin ? (
               <AdminView users={profiles} events={events} hiddenEventIds={hiddenEventIds} onToggleVisibility={toggleEventVisibility} onDelete={removeEvent} />
             ) : (
-              <ProgressView user={currentUser} users={profiles} streakWeeks={streakWeeks} xp={xp} leaderboardTab={leaderboardTab} setLeaderboardTab={setLeaderboardTab} challengeProgress={challengeProgress} monthProgress={monthProgress} showToast={showToast} progressTab={progressTab} setProgressTab={setProgressTab} challengeFilter={challengeFilter} setChallengeFilter={setChallengeFilter} onRecordRoute={recordRoute} onRecordActivity={recordActivity} onClaimChallenge={claimChallenge} onDownloadCertificate={downloadCertificate} onCopyDiscountCode={copyDiscountCode} partnerChallenges={partnerChallenges} />
+              <ProgressView user={currentUser} users={profiles} streakWeeks={streakWeeks} xp={xp} leaderboardTab={leaderboardTab} setLeaderboardTab={setLeaderboardTab} challengeProgress={challengeProgress} monthProgress={monthProgress} showToast={showToast} progressTab={progressTab} setProgressTab={setProgressTab} challengeFilter={challengeFilter} setChallengeFilter={setChallengeFilter} onRecordRoute={recordRoute} onRecordActivity={recordActivity} onClaimChallenge={claimChallenge} onDownloadCertificate={downloadCertificate} onCopyDiscountCode={copyDiscountCode} onUnlockLevelTreeNode={unlockLevelTreeNode} onResetLevelTreeNodes={resetLevelTreeNodes} partnerChallenges={partnerChallenges} />
             )}
           </main>
           <footer className="footer-note"><span>© 2026 SportQuest</span><span><span className="status-dot" /> Alles im Demo-Modus <span className="footer-sep">·</span> Keine echten Buchungen oder Zahlungen</span></footer>
@@ -1020,20 +1041,22 @@ function CreateCommunityDialog({ value, onChange, onClose, onCreate }) {
 function ProgressModeSwitch({ activeTab, setProgressTab }) {
   const tabs = [
     { id: 'Fortschritt', icon: <TrophyRegular /> },
+    { id: 'Levelbaum', icon: <FlashRegular /> },
     { id: 'Challenge-Board', label: 'Challenges', icon: <SparkleRegular /> },
     { id: 'Aktivitäten', icon: <CalendarLtrRegular /> },
     { id: 'Heatmap', icon: <LocationRegular /> },
   ]
-  return <div className="progress-mode-switch" role="tablist" aria-label="Fortschritt, Challenges, Aktivitäten oder Heatmap">
+  return <div className="progress-mode-switch" role="tablist" aria-label="Fortschritt, Levelbaum, Challenges, Aktivitäten oder Heatmap">
     {tabs.map((tab) => <button key={tab.id} role="tab" aria-selected={activeTab === tab.id} className={activeTab === tab.id ? 'active' : ''} onClick={() => setProgressTab(tab.id)}>{tab.icon}{tab.label ?? tab.id}</button>)}
   </div>
 }
 
-function ProgressView({ user, users, streakWeeks, xp, leaderboardTab, setLeaderboardTab, challengeProgress, monthProgress, showToast, progressTab, setProgressTab, challengeFilter, setChallengeFilter, onRecordRoute, onRecordActivity, onClaimChallenge, onDownloadCertificate, onCopyDiscountCode, partnerChallenges }) {
+function ProgressView({ user, users, streakWeeks, xp, leaderboardTab, setLeaderboardTab, challengeProgress, monthProgress, showToast, progressTab, setProgressTab, challengeFilter, setChallengeFilter, onRecordRoute, onRecordActivity, onClaimChallenge, onDownloadCertificate, onCopyDiscountCode, onUnlockLevelTreeNode, onResetLevelTreeNodes, partnerChallenges }) {
   const { level, currentXp: levelXp, nextLevelXp, nextLevelTotalXp } = getLevelInfo(xp)
   const challengeCatalog = getChallengeCatalog(user, partnerChallenges, challengeContext)
   const claimedChallenges = user.claimedChallenges ?? []
   const medals = user.medals ?? []
+  const levelTree = getLevelTreeState(xp, user.levelTreeNodes)
   const medalsEarned = medals.length || claimedChallenges.length
   const levelMedals = Array.from({ length: Math.floor(level / 5) }, (_, index) => (index + 1) * 5)
   const friendsById = new Map([...users, ...demoFriends]
@@ -1046,6 +1069,15 @@ function ProgressView({ user, users, streakWeeks, xp, leaderboardTab, setLeaderb
       <ProgressModeSwitch activeTab={progressTab} setProgressTab={setProgressTab} />
       <ActivityHistoryView user={user} friends={activityFriends} onRecordActivity={onRecordActivity} />
     </>
+  }
+  if (progressTab === 'Levelbaum') {
+    return <LevelTreeView
+      xp={xp}
+      tree={levelTree}
+      onUnlock={onUnlockLevelTreeNode}
+      onReset={onResetLevelTreeNodes}
+      setProgressTab={setProgressTab}
+    />
   }
   if (progressTab === 'Challenge-Board') {
     return <ChallengeBoardView challenges={challengeCatalog} claimed={claimedChallenges} medals={medals} levelMilestones={levelMedals} filter={challengeFilter} setFilter={setChallengeFilter} onClaim={onClaimChallenge} onDownloadCertificate={onDownloadCertificate} onCopyDiscountCode={onCopyDiscountCode} setProgressTab={setProgressTab} />
@@ -1065,7 +1097,8 @@ function ProgressView({ user, users, streakWeeks, xp, leaderboardTab, setLeaderb
     <ProgressModeSwitch activeTab={progressTab} setProgressTab={setProgressTab} />
     {progressTab === 'Heatmap' ? <OutdoorHeatmap sessions={user.routeSessions ?? []} onRecordRoute={onRecordRoute} /> : <>
       <div className="progress-overview"><div className="progress-main"><div className="eyebrow">DEIN LEVEL</div><div className="level-display"><span>{String(level).padStart(2, '0')}</span><div><strong>Level {level} · In Bewegung</strong><small>{xp.toLocaleString('de-DE')} XP insgesamt</small></div><span className="level-star"><TrophyRegular /></span></div><ProgressBar className="xp-progress" value={levelXp / nextLevelXp} max={1} aria-label={`${Math.round(levelXp / nextLevelXp * 100)} Prozent bis Level ${level + 1}`} /><div className="xp-caption"><span>{levelXp.toLocaleString('de-DE')} / {nextLevelXp.toLocaleString('de-DE')} XP in diesem Level</span><span>Noch {(nextLevelXp - levelXp).toLocaleString('de-DE')} XP · Level {level + 1} ab {nextLevelTotalXp.toLocaleString('de-DE')} Gesamt-XP</span></div></div><div className="progress-side"><div><span className="stat-icon lime"><FlashRegular /></span><strong>{streakWeeks} {streakWeeks === 1 ? 'Woche' : 'Wochen'}</strong><small>Aktive Wochen am Stück</small></div><div><span className="stat-icon"><TrophyRegular /></span><strong>{user.activityLogged}</strong><small>Aktivitäten gesamt</small></div></div></div>
-      <section className="xp-earnings panel" aria-labelledby="xp-earnings-title"><div className="xp-earnings-heading"><div><span className="eyebrow">KLAR & TRANSPARENT</span><h2 id="xp-earnings-title">So sammelst du XP</h2></div><span>Level brauchen immer mehr XP · Gesamt-XP bleiben</span></div><div className="xp-earnings-grid"><div><span>✓</span><strong>Trainingseinheit</strong><small>Workout abgeschlossen</small><b>+50 XP</b></div><div><span>⚽</span><strong>Match</strong><small>Spiel abgeschlossen</small><b>+100 XP</b></div><div><span>↗</span><strong>Outdoor-Route</strong><small>50 XP + 10 XP je km</small><b>ab +55 XP</b></div><div><span>☀</span><strong>Tages-Check-in</strong><small>Einmal pro Tag</small><b>+20 XP</b></div><div><span>✦</span><strong>Challenge</strong><small>Nach Abschluss einlösen</small><b>80–350 XP</b></div></div><p className="level-rule-note">Regel: Start bei 1.000 XP, jede Stufe steigt um 25 % und wird auf 100 XP aufgerundet. Beispiel: 1.000 → 1.300 → 1.600 → 2.000 → 2.500 XP.</p></section>
+      <button className="level-tree-shortcut" type="button" onClick={() => setProgressTab('Levelbaum')}><span><FlashRegular /></span><strong>Gestalte deinen Levelbaum<small>{levelTree.availablePoints} Talentpunkte verfügbar · Boni freischalten</small></strong><ArrowRightRegular /></button>
+      <section className="xp-earnings panel" aria-labelledby="xp-earnings-title"><div className="xp-earnings-heading"><div><span className="eyebrow">KLAR & TRANSPARENT</span><h2 id="xp-earnings-title">So sammelst du XP</h2></div><span>Level brauchen immer mehr XP · Gesamt-XP bleiben</span></div><div className="xp-earnings-grid"><div><span>✓</span><strong>Trainingseinheit</strong><small>Workout abgeschlossen</small><b>+50 XP</b></div><div><span>⚽</span><strong>Match</strong><small>Spiel abgeschlossen</small><b>+100 XP</b></div><div><span>↗</span><strong>Outdoor-Route</strong><small>50 XP + 10 XP je km</small><b>ab +55 XP</b></div><div><span>☀</span><strong>Tages-Check-in</strong><small>Einmal pro Tag</small><b>+20 XP</b></div><div><span>✦</span><strong>Challenge</strong><small>Nach Abschluss einlösen</small><b>80–350 XP</b></div></div><p className="level-rule-note">Regel: Start bei 1.000 XP, jede Stufe steigt um 25 % und wird auf 100 XP aufgerundet. Beispiel: 1.000 → 1.300 → 1.600 → 2.000 → 2.500 XP. Freigeschaltete Levelbaum-Boni kommen bei passenden Aktivitäten hinzu.</p></section>
       <LevelMedalCollection users={users} currentUser={user} earnedMilestones={levelMedals} />
       <div className="progress-columns"><section className="challenge-panel"><div className="panel-heading"><div><div className="eyebrow">DEIN FOKUS</div><h2>Challenges</h2></div><span className="challenge-count">{challengeCatalog.filter((challenge) => challenge.completed && !claimedChallenges.includes(challenge.id)).length} bereit</span></div><article className="challenge-card"><div className="challenge-top"><span className="challenge-icon"><FlashRegular /></span><span className="time-left">Wöchentlich</span></div><h3>Woche in Bewegung</h3><p>Mach diese Woche 5 Aktivitäten und bleib in deinem Flow.</p><div className="challenge-progress-line"><span>Fortschritt</span><strong>{challengeProgress} / 5</strong></div><div className="small-progress"><span style={{ width: `${challengeProgress * 20}%` }} /></div><div className="challenge-bottom"><span><TrophyRegular /> <strong>+200 XP</strong> + Medaille</span><button onClick={() => { setChallengeFilter('Alle'); setProgressTab('Challenge-Board') }}>{challengeProgress >= 5 ? 'Belohnung sichern' : 'Board öffnen'} <ArrowRightRegular /></button></div></article><article className="mini-challenge"><span className="mini-challenge-icon"><FlashRegular /></span><div><strong>Multi-Sport im Monat</strong><p>Erreiche 12 Sport-Sessions innerhalb dieses Monats.</p><div className="small-progress"><span style={{ width: `${Math.min(monthProgress / 12 * 100, 100)}%` }} /></div></div><span className="mini-challenge-count">{monthProgress}/12</span></article><button className="challenge-board-link" onClick={() => { setChallengeFilter('Alle'); setProgressTab('Challenge-Board') }}><SparkleRegular /> Alle Ziele & Medaillen ansehen <ArrowRightRegular /></button></section>
         <section className="leaderboard-panel"><div className="panel-heading"><div><div className="eyebrow">GEMEINSAM BESSER</div><h2>Leaderboard</h2></div><span className="rank-period">Diese Woche</span></div><div className="tabs-row small-tabs" role="tablist" aria-label="Leaderboard anzeigen">{['Freunde', 'Lokale Community', 'Gesamtrangliste'].map((tab) => <button key={tab} role="tab" aria-selected={leaderboardTab === tab} className={leaderboardTab === tab ? 'active' : ''} onClick={() => setLeaderboardTab(tab)}>{tab}</button>)}</div><div className="ranking-list">{rankings.map(([rank, name, score, initials]) => <div className={`ranking-row ${name === user.name ? 'self' : ''}`} key={`${leaderboardTab}-${rank}`}><span className={`rank-number ${rank === '1' ? 'first' : ''}`}>{rank}</span><Avatar name={name} initials={initials} size={34} color="neutral" /><span className="rank-name">{name}{name === user.name && <small>Du</small>}</span><strong>{score}</strong></div>)}</div><button className="leaderboard-link" onClick={() => showToast('Das ist deine aktuelle Demo-Rangliste')}>Rangliste ansehen <ArrowRightRegular /></button></section></div>
@@ -1095,6 +1128,128 @@ function LevelMedalCollection({ users, currentUser, earnedMilestones }) {
       <div className="level-medal-leaderboard"><div className="eyebrow">VERGLEICH IN DEINER DEMO-COMMUNITY</div>{comparison.map((user, index) => <div className={`level-medal-rank ${user.id === currentUser.id ? 'self' : ''}`} key={user.id}><span>{index + 1}</span><Avatar name={user.name} initials={user.initials} size={30} color="neutral" /><strong>{user.name}{user.id === currentUser.id && <small>Du</small>}</strong><span className="level-medal-rank-count"><b>{user.medals}</b><small>{user.levelMedals} Level · {user.challengeMedals} Challenge</small></span><span>Lv. {user.level}</span></div>)}</div>
     </div>
   </section>
+}
+
+function LevelTreeView({ xp, tree, onUnlock, onReset, setProgressTab }) {
+  const [selectedNodeId, setSelectedNodeId] = useState(null)
+  const [confirmReset, setConfirmReset] = useState(false)
+  const { level, currentXp, nextLevelXp } = getLevelInfo(xp)
+  const selectedNode = tree.branches.flatMap((branch) => branch.nodes).find((node) => node.id === selectedNodeId)
+  const nodesById = new Map(tree.branches.flatMap((branch) => branch.nodes).map((node) => [node.id, node]))
+  const resetPoints = () => {
+    onReset()
+    setSelectedNodeId(null)
+    setConfirmReset(false)
+  }
+  return <>
+    <PageHeading
+      eyebrow="DEIN WEG · DEINE WAHL"
+      title={<>Dein Levelbaum<span className="lime-period">.</span></>}
+      description="Steige auf, sammle Talentpunkte und gestalte deinen eigenen Weg zu neuen Boni."
+    />
+    <ProgressModeSwitch activeTab="Levelbaum" setProgressTab={setProgressTab} />
+    <section className="level-tree-hero">
+      <div className="level-tree-hero-copy">
+        <span className="feature-kicker"><SparkleRegular /> DEIN SKILL-TREE</span>
+        <h2>Jedes Level bringt dich weiter.</h2>
+        <p>Für jedes erreichte Level bekommst du einen Talentpunkt. Gib ihn für dauerhafte XP-Boni oder virtuelle Partner-Lose aus.</p>
+        <div className="level-tree-xp"><span>Level {level} · {currentXp.toLocaleString('de-DE')} / {nextLevelXp.toLocaleString('de-DE')} XP</span><strong>Noch {Math.max(nextLevelXp - currentXp, 0).toLocaleString('de-DE')} XP bis Level {level + 1}</strong></div>
+        <ProgressBar className="xp-progress" value={currentXp / nextLevelXp} max={1} aria-label={`${Math.round(currentXp / nextLevelXp * 100)} Prozent bis Level ${level + 1}`} />
+        <div className="level-tree-meter"><span><CheckmarkCircleRegular /> {tree.earnedPoints} verdient</span><span><FlashRegular /> {tree.spentPoints} eingesetzt</span><span><SparkleRegular /> {tree.availablePoints} verfügbar</span></div>
+      </div>
+      <aside className="level-tree-reward-card">
+        <div className="level-tree-orb" aria-hidden="true"><span>DEIN LEVEL</span><strong>{String(level).padStart(2, '0')}</strong><i>✦</i></div>
+        <div className="level-tree-wallet"><span><FlashRegular /></span><div><strong>{tree.availablePoints}</strong><small>Talentpunkte frei</small></div></div>
+      </aside>
+    </section>
+    <div className="tree-section-heading"><div><span className="eyebrow">DEIN SKILLTREE · VIER HIMMELSRICHTUNGEN</span><h2>Jeder Ast führt zu neuen Talenten.</h2></div><button className="tree-reset-button" type="button" disabled={!tree.spentPoints} onClick={() => setConfirmReset(true)}><ArrowCounterclockwiseRegular /> Talentpunkte zurückholen</button></div>
+    <p className="tree-map-hint">Wähle eine Kugel für Details. Freie Talente leuchten; jeder Ast kann sich mehrfach verzweigen.</p>
+    <div className="level-tree-map-scroll" tabIndex={0} aria-label="Skillbaum. Auf kleinen Bildschirmen horizontal scrollen.">
+      <div className="level-tree-map" role="group" aria-label="Radialer Skillbaum mit vier Kategorien und verzweigten Talenten">
+        <svg className="tree-connections" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true">
+          {tree.branches.map((branch) => <g key={branch.id}>
+            <line className="tree-link tree-link-category" x1="500" y1="500" x2={branch.position.x} y2={branch.position.y} />
+            {branch.nodes.map((node) => {
+              const parent = node.requires ? nodesById.get(node.requires) : branch.position
+              const active = node.unlocked && (!node.requires || nodesById.get(node.requires)?.unlocked)
+              return <line
+                key={`${node.id}-link`}
+                className={`tree-link ${active ? 'active' : ''}`}
+                x1={parent.x}
+                y1={parent.y}
+                x2={node.x}
+                y2={node.y}
+              />
+            })}
+          </g>)}
+        </svg>
+        {tree.branches.map((branch) => <div
+          key={branch.id}
+          className={`tree-category direction-${branch.direction}`}
+          style={{ left: `${branch.position.x / 10}%`, top: `${branch.position.y / 10}%` }}
+        >
+          <span className="tree-category-icon" aria-hidden="true">{branch.icon}</span>
+          <span><strong>{branch.title}</strong><small>{branch.directionLabel.toUpperCase()} · {branch.nodes.filter((node) => node.unlocked).length}/{branch.nodes.length}</small></span>
+        </div>)}
+        <div className="level-tree-hub">
+          <span className="tree-hub-label">DEIN STARTPUNKT</span>
+          <span className="tree-hub-level">{String(level).padStart(2, '0')}</span>
+          <strong>Level {level}</strong>
+          <small>{tree.availablePoints} Punkte frei</small>
+        </div>
+        {tree.branches.flatMap((branch) => branch.nodes.map((node) => {
+          const status = node.unlocked ? 'Erforscht' : node.available ? 'Freischalten' : node.lockedByLevel ? `Ab Lv. ${node.level}` : 'Ast fortsetzen'
+          return <div
+            className={`tree-node direction-${branch.direction} ${node.unlocked ? 'unlocked' : node.available ? 'available' : 'locked'} ${selectedNodeId === node.id ? 'selected' : ''}`}
+            key={node.id}
+            style={{ left: `${node.x / 10}%`, top: `${node.y / 10}%` }}
+          >
+            <button
+              className="tree-node-bubble"
+              type="button"
+              title={`${node.title}: ${node.description}`}
+              data-tooltip={`${node.title}: ${node.description}`}
+              aria-label={`${branch.title}: ${node.title}, Level ${node.level}. ${node.description} ${status}`}
+              aria-pressed={selectedNodeId === node.id}
+              onClick={() => setSelectedNodeId(node.id)}
+            >
+              <span className="tree-bubble-level">LV {node.level}</span>
+              <strong>{node.shortTitle}</strong>
+              <span className="tree-bubble-state" aria-hidden="true">{node.unlocked ? '✓' : node.available ? '+' : '·'}</span>
+            </button>
+          </div>
+        }))}
+      </div>
+    </div>
+    {selectedNode && <section className="tree-node-details panel" aria-live="polite" aria-labelledby="tree-node-details-title">
+      <div className="tree-details-icon" aria-hidden="true">{selectedNode.unlocked ? <CheckmarkCircleRegular /> : <FlashRegular />}</div>
+      <div className="tree-details-copy">
+        <span className="eyebrow">{selectedNode.unlocked ? 'BEREITS ERFORSCHT' : `LEVEL ${selectedNode.level} · ${selectedNode.available ? 'FREISCHALTBAR' : 'TALENTDETAILS'}`}</span>
+        <h2 id="tree-node-details-title">{selectedNode.title}</h2>
+        <p>{selectedNode.description}</p>
+        {!selectedNode.available && !selectedNode.unlocked && <small>{selectedNode.lockedByLevel ? `Erreiche Level ${selectedNode.level}, um dieses Talent freizuschalten.` : selectedNode.requires ? `Schalte zuerst „${selectedNode.prerequisiteTitle}“ frei.` : 'Sammle einen Talentpunkt, um dieses Talent freizuschalten.'}</small>}
+      </div>
+      {selectedNode.available && <button className="lime-button tree-details-unlock" type="button" onClick={() => onUnlock(selectedNode.id)}><FlashRegular /> Für 1 Punkt freischalten</button>}
+    </section>}
+    {confirmReset && <div className="tree-reset-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setConfirmReset(false) }}>
+      <section className="tree-reset-dialog" role="alertdialog" aria-modal="true" aria-labelledby="tree-reset-title" aria-describedby="tree-reset-description">
+        <span className="tree-reset-dialog-icon"><ArrowCounterclockwiseRegular /></span>
+        <span className="eyebrow">TALENTPUNKTE NEU VERTEILEN</span>
+        <h2 id="tree-reset-title">Deinen Skilltree zurücksetzen?</h2>
+        <p id="tree-reset-description">Du bekommst <strong>{tree.spentPoints} Talentpunkte</strong> zurück und kannst sie neu verteilen. Dein Level und deine XP bleiben erhalten; die bisherigen Talentboni und Demo-Lose werden zurückgesetzt.</p>
+        <div className="tree-reset-actions">
+          <button className="tree-cancel-button" type="button" onClick={() => setConfirmReset(false)}>Doch nicht</button>
+          <button className="lime-button" type="button" onClick={resetPoints}><ArrowCounterclockwiseRegular /> Punkte zurückholen</button>
+        </div>
+      </section>
+    </div>}
+    <section className="level-tree-partner panel">
+      <span className="tree-partner-icon"><TrophyRegular /></span>
+      <div><span className="eyebrow">PARTNER-GOODIES · DEMO</span><h2>{tree.raffleEntries ? `Du hast ${tree.raffleEntries} virtuelle ${tree.raffleEntries === 1 ? 'Chance' : 'Chancen'}.` : 'Ein Partner-Goodie wartet im Baum.'}</h2><p>Schalte einen Gewinnchance-Knoten frei, um Demo-Lose für ein SportQuest-Überraschungspaket zu sammeln. Noch nimmt kein echtes Gewinnspiel teil.</p></div>
+      <span className="tree-ticket-count">{tree.raffleEntries}<small>LOSE</small></span>
+    </section>
+    <p className="level-tree-footnote">Die Boni und Lose werden nur in diesem Demo-Profil gespeichert. Es gibt aktuell keine echte Partnerverlosung oder Produktauslieferung.</p>
+  </>
 }
 
 function MedalArtwork({ rarity = 'bronze', icon = '✦', large = false }) {
